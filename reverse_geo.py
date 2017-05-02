@@ -5,6 +5,10 @@ import argparse
 import exiftool
 from geopy.geocoders import Nominatim
 
+# Dictionary of tags for ExifTool locations to data from geopy
+tags = {'-MWG:Country=': 'country', '-MWG:State=': 'state', '-MWG:City=': 'city',
+        '-MWG:Location=': 'city_district'}
+
 parser = argparse.ArgumentParser(description='Simple reverse geocoding with geopy and exiftool')
 parser.add_argument('files', nargs='+', help='files to reverse geocode')
 files = parser.parse_args().files
@@ -15,7 +19,8 @@ geolocator = Nominatim()
 with exiftool.ExifTool() as et:
     for f in files:
         # Find place names from GPS already in file
-        gps = et.get_tag('GPSLatitude', f), et.get_tag('GPSLongitude', f)
+        # Note: use the XMP tags so that lat/long has a - sign for W or S
+        gps = et.get_tag('XMP:GPSLatitude', f), et.get_tag('XMP:GPSLongitude', f)
         location = geolocator.reverse(gps).raw['address']
 
         # Copy XMP info to IPTC (darktable does not write IPTC currently),
@@ -28,12 +33,22 @@ with exiftool.ExifTool() as et:
         # Apply reverse geocoding using MWG tag standards
         # (see, e.g., http://www.metadataworkinggroup.org/ and
         # http://www.sno.phy.queensu.ca/~phil/exiftool/TagNames/MWG.html)
-        # This is a preliminary try, may vary based on country, region, etc.,
-        # so will have to manually monitor and adjust in the future,
-        # especially the Location tag
-        params = map(fsencode, ["-MWG:Country=" + location['country'],
-                                "-MWG:State=" + location['state'],
-                                "-MWG:City=" + location['city'],
-                                "-MWG:Location=" + location['city_district'],
-                                f])
+        # This works best for cities, for rural areas (e.g. when hiking) let's
+        # use the county if available. Would be great to get more info, but for
+        # now that works okay. There may be a lot of variation in what makes
+        # sense, especially the Location tag, so may need to make this more
+        # sophisticated in the future.
+        params = []
+
+        for k in tags:
+            if tags[k] in location:
+                params.append(k + location[tags[k]])
+            elif k == '-MWG:Location=' and 'county' in location:
+                params.append(k + location['county'])
+
+        # Then add the filename and encode everything
+        params.append(f)
+        params = map(fsencode, params)
+
+        # Do the tagging!
         print(et.execute(*params).decode('utf-8'))
